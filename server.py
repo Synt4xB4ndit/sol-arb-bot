@@ -1,4 +1,4 @@
-import aiohttp
+]import aiohttp
 import asyncio
 import os
 import base58
@@ -143,6 +143,53 @@ class ArbitrageBot:
                     else:
                         return
 
+    async def get_dexscreener_price(self, session: aiohttp.ClientSession, token_address: str) -> Optional[float]:
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    logging.debug(f"DexScreener status {resp.status} for {token_address}")
+                    return None
+                data = await resp.json()
+                if 'pairs' not in data or not data['pairs']:
+                    return None
+                # Prefer Raydium pair with highest liquidity
+                for pair in sorted(data['pairs'], key=lambda p: p.get('liquidity', {}).get('usd', 0), reverse=True):
+                    if pair.get('chainId') == 'solana' and pair.get('dexId') == 'raydium' and pair.get('priceUsd'):
+                        return float(pair['priceUsd'])
+                # Fallback to any Solana pair
+                for pair in data['pairs']:
+                    if pair.get('chainId') == 'solana' and pair.get('priceUsd'):
+                        return float(pair['priceUsd'])
+                return None
+        except Exception as e:
+            logging.error(f"DexScreener error for {token_address}: {e}")
+            return None
+
+    async def scan_for_opportunities(self, session: aiohttp.ClientSession):
+        for symbol, info in self.tokens.items():
+            address = info['address']
+            
+            # Get DexScreener price
+            ds_price = await self.get_dexscreener_price(session, address)
+            if ds_price is None:
+                continue
+
+            # Get Jupiter quote for price approximation (small SOL → token)
+            quote = await self.get_jupiter_quote(session, int(0.01 * 1e9))
+            if quote is None:
+                continue
+
+            # Approximate USD price from Jupiter quote
+            jup_price = float(quote['outAmount']) / 1e6  # rough USD conversion (adjust if needed)
+
+            diff_pct = abs(ds_price - jup_price) / min(ds_price, jup_price) * 100
+            logging.info(f"{symbol}: DS ${ds_price:.6f} | Jup ${jup_price:.6f} | Diff {diff_pct:.2f}%")
+
+            if diff_pct > 0.5:  # example threshold - can be moved to config
+                logging.warning(f"Potential arbitrage opportunity on {symbol}! Diff {diff_pct:.2f}%")
+                # TODO: later add attempt_roundtrip_arb here
+
     async def get_jupiter_quote(self, session, amount_lamports: int):
         params = {
             "inputMint": self.sol,
@@ -245,7 +292,8 @@ async def run_bot():
             if not bot.tokens:
                 await bot.fetch_solana_tokens()
             logging.info(f"Bot is running with {len(bot.tokens)} tokens")
-            # Future: add scanning and arb logic here
+            async with aiohttp.ClientSession() as session:
+                await bot.scan_for_opportunities(session)
         await asyncio.sleep(60)
 
 # Start the background loop when the app starts
