@@ -169,26 +169,24 @@ class ArbitrageBot:
     async def scan_for_opportunities(self, session: aiohttp.ClientSession):
         for symbol, info in self.tokens.items():
             address = info['address']
-            
-            # Get DexScreener price
+        
+            # Get DexScreener price (primary - reliable)
             ds_price = await self.get_dexscreener_price(session, address)
             if ds_price is None:
+                logging.debug(f"No DexScreener price for {symbol}")
                 continue
 
-            # Get Jupiter quote for price approximation (small SOL → token)
-            quote = await self.get_jupiter_quote(session, int(0.01 * 1e9))
-            if quote is None:
-                continue
+            # Skip Jupiter for now (DNS issue on Render) - use DexScreener as baseline
+            # Later: re-add Jupiter with fallback resolver
+            jup_price = ds_price  # placeholder - fallback to same price (no diff yet)
 
-            # Approximate USD price from Jupiter quote
-            jup_price = float(quote['outAmount']) / 1e6  # rough USD conversion (adjust if needed)
+            diff_pct = 0.0  # No comparison yet - will be 0 until Jupiter fixed
+            logging.info(f"{symbol}: DS ${ds_price:.6f} (baseline)")
 
-            diff_pct = abs(ds_price - jup_price) / min(ds_price, jup_price) * 100
-            logging.info(f"{symbol}: DS ${ds_price:.6f} | Jup ${jup_price:.6f} | Diff {diff_pct:.2f}%")
-
-            if diff_pct > 0.5:  # example threshold - can be moved to config
-                logging.warning(f"Potential arbitrage opportunity on {symbol}! Diff {diff_pct:.2f}%")
-                # TODO: later add attempt_roundtrip_arb here
+            # Temporary: flag any token as "potential" for testing
+            # Later: real diff check when Jupiter works
+            logging.info(f"Scanning {symbol} - address {address} - price ${ds_price:.6f}")
+            # TODO: when Jupiter fixed, add real diff check and round-trip call here
 
     async def get_jupiter_quote(self, session, amount_lamports: int):
         params = {
