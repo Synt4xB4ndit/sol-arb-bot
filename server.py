@@ -4,7 +4,7 @@ import os
 import base58
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 
 from aiohttp import ClientTimeout, TCPConnector
 from aiohttp.resolver import ThreadedResolver
@@ -57,12 +57,75 @@ class ArbitrageBot:
 
         self.client: Optional[AsyncClient] = None
         self.running = False
+        self.tokens: Dict[str, Dict] = {}  # symbol -> {'address': str}
 
         self.config = {
             "slippage_bps": 100,
             "swap_amount_sol": 0.05,
             "simulate": True,
         }
+
+    async def fetch_solana_tokens(self):
+        logging.info("Fetching Solana tokens from CoinGecko (reliable mode)...")
+        async with aiohttp.ClientSession() as session:
+            # Step 1: Get all coins with platforms (this endpoint includes addresses)
+            list_url = "https://api.coingecko.com/api/v3/coins/list?include_platform=true"
+            try:
+                async with session.get(list_url) as resp:
+                    if resp.status != 200:
+                        logging.error(f"CoinGecko list failed: {resp.status}")
+                        return
+                    all_coins = await resp.json()
+                    logging.info(f"Received {len(all_coins)} total coins from /list")
+            except Exception as e:
+                logging.error(f"List fetch error: {e}")
+                return
+
+            # Filter Solana tokens with valid address
+            sol_tokens = []
+            for coin in all_coins:
+                sol_addr = coin.get('platforms', {}).get('solana')
+                if sol_addr and isinstance(sol_addr, str) and len(sol_addr) > 30:
+                    sol_tokens.append({
+                        'id': coin['id'],
+                        'symbol': coin['symbol'].upper(),
+                        'address': sol_addr
+                    })
+
+            logging.info(f"Found {len(sol_tokens)} potential Solana tokens")
+
+            if len(sol_tokens) == 0:
+                logging.warning("No Solana tokens found - check network/API")
+                return
+
+            # Step 2: Get market cap for first 250 (safe batch)
+            ids = ','.join(t['id'] for t in sol_tokens[:250])
+            markets_url = "https://api.coingecko.com/api/v3/coins/markets"
+            params = {
+                'vs_currency': 'usd',
+                'ids': ids,
+                'order': 'market_cap_desc',
+                'per_page': 250,
+                'page': 1,
+            }
+
+            try:
+                async with session.get(markets_url, params=params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        self.tokens = {}
+                        for market in data:
+                            if market.get('market_cap', 0) > 1_000_000:
+                                symbol = market['symbol'].upper()
+                                for t in sol_tokens:
+                                    if t['id'] == market['id']:
+                                        self.tokens[symbol] = {'address': t['address']}
+                                        break
+                        logging.info(f"Loaded {len(self.tokens)} Solana tokens > $1M MC")
+                    else:
+                        logging.error(f"Markets fetch failed: {resp.status}")
+            except Exception as e:
+                logging.error(f"Markets fetch error: {e}")
 
     async def get_jupiter_quote(self, session, amount_lamports: int):
         params = {
@@ -117,6 +180,10 @@ async def verify_api_key(
 async def status():
     return {"running": bot.running}
 
+@app.get("/")
+async def root():
+    return {"message": "Solana arbitrage bot is running", "owner": "DEV"}
+
 @app.post("/start")
 async def start(_: dict = Depends(verify_api_key)):
     bot.running = True
@@ -154,6 +221,24 @@ async def jup_test():
             "outAmount": quote["outAmount"],
             "priceImpactPct": quote.get("priceImpactPct"),
         }
+
+# ====================== MAIN ======================
+async def run_bot():
+    while True:
+        if bot.running:
+            if not bot.tokens:
+                await bot.fetch_solana_tokens()
+            logging.info(f"Bot is running with {len(bot.tokens)} tokens")
+            # Future: add scanning and arb logic here
+        await asyncio.sleep(60)
+
+# Start the background bot loop when the app starts
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(run_bot())
+
+if __name__ == "__main__":
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
 
 
 
