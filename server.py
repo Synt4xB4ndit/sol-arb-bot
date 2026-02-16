@@ -170,23 +170,24 @@ class ArbitrageBot:
         for symbol, info in self.tokens.items():
             address = info['address']
         
-            # Get DexScreener price (primary - reliable)
             ds_price = await self.get_dexscreener_price(session, address)
             if ds_price is None:
-                logging.debug(f"No DexScreener price for {symbol}")
                 continue
 
-            # Skip Jupiter for now (DNS issue on Render) - use DexScreener as baseline
-            # Later: re-add Jupiter with fallback resolver
-            jup_price = ds_price  # placeholder - fallback to same price (no diff yet)
+            # For now, use DexScreener as baseline (Jupiter DNS issue)
+            # Later: re-add Jupiter price when fixed
+            baseline_price = ds_price
 
-            diff_pct = 0.0  # No comparison yet - will be 0 until Jupiter fixed
+            # Placeholder diff (0% since only one source) - will be real when Jupiter works
+            diff_pct = 0.0  # Update this when we have two prices
             logging.info(f"{symbol}: DS ${ds_price:.6f} (baseline)")
 
-            # Temporary: flag any token as "potential" for testing
-            # Later: real diff check when Jupiter works
+            # Example detection (later: real diff check)
             logging.info(f"Scanning {symbol} - address {address} - price ${ds_price:.6f}")
-            # TODO: when Jupiter fixed, add real diff check and round-trip call here
+            # If we had two prices:
+            # if diff_pct > 0.5:
+            #     logging.warning(f"Opportunity on {symbol}! Diff {diff_pct:.2f}%")
+            #     # Call attempt_roundtrip_arb here when ready
 
     async def get_jupiter_quote(self, session, amount_lamports: int):
         params = {
