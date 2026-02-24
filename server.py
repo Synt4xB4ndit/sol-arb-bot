@@ -167,27 +167,44 @@ class ArbitrageBot:
             return None
 
     async def scan_for_opportunities(self, session: aiohttp.ClientSession):
-        for symbol, info in self.tokens.items():
+        # Limit to top 30 tokens (can sort by liquidity/volume later)
+        tokens_to_scan = list(self.tokens.items())[:30]
+
+        for symbol, info in tokens_to_scan:
             address = info['address']
         
             ds_price = await self.get_dexscreener_price(session, address)
             if ds_price is None:
                 continue
 
-            # For now, use DexScreener as baseline (Jupiter DNS issue)
-            # Later: re-add Jupiter price when fixed
+            # Get liquidity from DexScreener pair (add filter)
+            liquidity_usd = 0
+            try:
+                url = f"https://api.dexscreener.com/latest/dex/tokens/{address}"
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if 'pairs' in data and data['pairs']:
+                            # Take best Raydium pair liquidity
+                            raydium_pair = next((p for p in data['pairs'] if p.get('dexId') == 'raydium'), None)
+                            if raydium_pair:
+                                liquidity_usd = raydium_pair.get('liquidity', {}).get('usd', 0)
+            except Exception as e:
+                logging.debug(f"Liquidity fetch error for {symbol}: {e}")
+
+            # Skip low liquidity (< $50k example)
+            if liquidity_usd < 50000:
+                logging.debug(f"Skipping {symbol} - low liquidity ${liquidity_usd:,.0f}")
+                continue
+
             baseline_price = ds_price
+            diff_pct = 0.0  # Placeholder - real diff when Jupiter fixed
+            logging.info(f"{symbol}: DS ${ds_price:.6f} (baseline) | Liquidity ${liquidity_usd:,.0f}")
 
-            # Placeholder diff (0% since only one source) - will be real when Jupiter works
-            diff_pct = 0.0  # Update this when we have two prices
-            logging.info(f"{symbol}: DS ${ds_price:.6f} (baseline)")
-
-            # Example detection (later: real diff check)
-            logging.info(f"Scanning {symbol} - address {address} - price ${ds_price:.6f}")
-            # If we had two prices:
-            # if diff_pct > 0.5:
-            #     logging.warning(f"Opportunity on {symbol}! Diff {diff_pct:.2f}%")
-            #     # Call attempt_roundtrip_arb here when ready
+            # Example: flag high-potential tokens (expand when Jupiter works)
+            if liquidity_usd > 100000:  # example filter for better ops
+                logging.info(f"High-potential token {symbol} - Liquidity ${liquidity_usd:,.0f}")
+                # TODO: add real diff check and arb execution here
 
     async def get_jupiter_quote(self, session, amount_lamports: int):
         params = {
@@ -286,14 +303,17 @@ async def jup_test():
 
 # ====================== BACKGROUND BOT LOOP ======================
 async def run_bot():
+    #Fetch tokens only once at startup
+    if not bot.tokens:
+        await bot.fetch_solana_tokens()
+    logging.info(f"Bot startup complete with {len(bot.tokens)} tokens")
+
     while True:
         if bot.running:
-            if not bot.tokens:
-                await bot.fetch_solana_tokens()
-            logging.info(f"Bot is running with {len(bot.tokens)} tokens")
+            logging.info(f"[{datetime.now().strftime('%H:%M:%S')}] Scanning {len(bot.tokens)} tokens...")
             async with aiohttp.ClientSession() as session:
                 await bot.scan_for_opportunities(session)
-        await asyncio.sleep(60)
+        await asyncio.sleep(180) #3 minutes - adjusttable (120-300s is best)      
 
 # Start the background loop when the app starts
 @app.on_event("startup")
