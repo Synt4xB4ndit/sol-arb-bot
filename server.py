@@ -10,8 +10,11 @@ from aiohttp import ClientTimeout, TCPConnector
 from aiohttp.resolver import ThreadedResolver
 
 from solders.keypair import Keypair
+from solders.transaction import VersionedTransaction
 
 from solana.rpc.async_api import AsyncClient
+from solana.rpc.commitment import Confirmed
+from solana.rpc.types import TxOpts
 
 from dotenv import load_dotenv
 
@@ -20,18 +23,14 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-
 # ====================== ENV ======================
-
 load_dotenv()
 
 RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 PRIVATE_KEY_B58 = os.getenv("PRIVATE_KEY")
 API_KEY = os.getenv("API_KEY", "change_me")
 
-
 # ====================== JUPITER ======================
-
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
 
 JUPITER_HEADERS = {
@@ -41,475 +40,290 @@ JUPITER_HEADERS = {
     "Referer": "https://jup.ag/",
 }
 
-
 # ====================== LOGGING ======================
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-
 # ====================== BOT ======================
-
 class ArbitrageBot:
-
     def __init__(self):
-
         self.sol = "So11111111111111111111111111111111111111112"
-
         self.usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
-
         decoded = base58.b58decode(PRIVATE_KEY_B58)
-
         self.wallet = Keypair.from_bytes(decoded)
 
-
         self.client: Optional[AsyncClient] = None
-
         self.running = False
-
-        self.tokens: Dict[str, Dict] = {}
-
+        self.tokens: Dict[str, Dict] = {}  # symbol -> {'address': str}
 
         self.config = {
-
             "slippage_bps": 100,
-
             "swap_amount_sol": 0.05,
-
             "simulate": True,
-
         }
-
-
-        self.last_token_refresh = 0
-
-
-    # ====================== TOKEN DISCOVERY ======================
 
     async def fetch_solana_tokens(self):
-
-        logging.info("Fetching realtime Solana tokens from DexScreener...")
-
-
-        url = "https://api.dexscreener.com/latest/dex/search?q=SOL"
-
-
-        try:
-
-            async with aiohttp.ClientSession() as session:
-
-                async with session.get(url) as resp:
-
-
+        logging.info("Fetching Solana tokens from CoinGecko (reliable mode with retry)...")
+        async with aiohttp.ClientSession() as session:
+            # Step 1: Get coins with platforms (usually succeeds)
+            list_url = "https://api.coingecko.com/api/v3/coins/list?include_platform=true"
+            try:
+                async with session.get(list_url) as resp:
                     if resp.status != 200:
-
-                        logging.error(f"DexScreener HTTP {resp.status}")
-
+                        logging.error(f"CoinGecko list failed: {resp.status}")
                         return
+                    all_coins = await resp.json()
+                    logging.info(f"Received {len(all_coins)} total coins from /list")
+            except Exception as e:
+                logging.error(f"List fetch error: {e}")
+                return
 
+            # Filter Solana tokens
+            sol_tokens = []
+            for coin in all_coins:
+                sol_addr = coin.get('platforms', {}).get('solana')
+                if sol_addr and isinstance(sol_addr, str) and len(sol_addr) > 30:
+                    sol_tokens.append({
+                        'id': coin['id'],
+                        'symbol': coin['symbol'].upper(),
+                        'address': sol_addr
+                    })
 
-                    data = await resp.json()
+            logging.info(f"Found {len(sol_tokens)} potential Solana tokens")
 
+            if len(sol_tokens) == 0:
+                logging.warning("No Solana tokens found - check network/API")
+                return
 
-                    pairs = data.get("pairs", [])
-
-
-                    new_tokens = {}
-
-
-                    for pair in pairs:
-
-
-                        if pair.get("chainId") != "solana":
-
-                            continue
-
-
-                        liquidity = pair.get("liquidity", {}).get("usd", 0)
-
-
-                        if liquidity < 100000:
-
-                            continue
-
-
-                        symbol = pair["baseToken"]["symbol"].upper()
-
-                        address = pair["baseToken"]["address"]
-
-
-                        new_tokens[symbol] = {
-
-                            "address": address
-
-                        }
-
-
-                    if new_tokens:
-
-                        self.tokens = new_tokens
-
-                        self.last_token_refresh = asyncio.get_event_loop().time()
-
-                        logging.info(f"Loaded {len(self.tokens)} realtime tokens")
-
-
-                    else:
-
-                        logging.warning("No tokens found, keeping previous list")
-
-
-        except Exception as e:
-
-            logging.error(f"DexScreener token fetch error: {e}")
-
-
-        # fallback safety
-
-        if not self.tokens:
-
-            logging.warning("Using fallback tokens")
-
-            self.tokens = {
-
-                'BONK': {'address': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'},
-
-                'WIF': {'address': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm'},
-
-                'POPCAT': {'address': '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr'},
-
-                'TRUMP': {'address': '6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN'},
-
+            # Step 2: Get market cap for first 250 with retry on 429
+            ids = ','.join(t['id'] for t in sol_tokens[:250])
+            markets_url = "https://api.coingecko.com/api/v3/coins/markets"
+            params = {
+                'vs_currency': 'usd',
+                'ids': ids,
+                'order': 'market_cap_desc',
+                'per_page': 250,
+                'page': 1,
             }
 
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    async with session.get(markets_url, params=params) as resp:
+                        if resp.status == 429:
+                            wait_time = 60  # seconds
+                            logging.warning(f"Rate limit hit (429) - waiting {wait_time}s before retry {attempt+1}/{max_retries}")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        if resp.status == 200:
+                            data = await resp.json()
+                            self.tokens = {}
+                            for market in data:
+                                market_cap = market.get('market_cap')
+                                if market_cap is None:
+                                    market_cap = 0  # safe default
+                                if market_cap > 1_000_000:
+                                    symbol = market['symbol'].upper()
+                                    for t in sol_tokens:
+                                        if t['id'] == market['id']:
+                                            self.tokens[symbol] = {'address': t['address']}
+                                            break
+                            logging.info(f"Loaded {len(self.tokens)} Solana tokens > $1M MC")
+                            return  # success - exit
+                        else:
+                            logging.error(f"Markets fetch failed: {resp.status}")
+                            return
+                except Exception as e:
+                    logging.error(f"Markets fetch error on attempt {attempt+1}: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(30)
+                    else:
+                        return
 
-    # ====================== PRICE FETCH ======================
-
-    async def get_dexscreener_price(
-
-        self,
-
-        session: aiohttp.ClientSession,
-
-        token_address: str
-
-    ) -> Optional[float]:
-
-
+    async def get_dexscreener_price(self, session: aiohttp.ClientSession, token_address: str) -> Optional[float]:
         url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-
-
         try:
-
             async with session.get(url) as resp:
-
-
                 if resp.status != 200:
-
+                    logging.debug(f"DexScreener status {resp.status} for {token_address}")
                     return None
-
-
                 data = await resp.json()
-
-
-                pairs = data.get("pairs", [])
-
-
-                if not pairs:
-
+                if 'pairs' not in data or not data['pairs']:
                     return None
-
-
-                best_pair = max(
-
-                    pairs,
-
-                    key=lambda p: p.get('liquidity', {}).get('usd', 0)
-
-                )
-
-
-                price = best_pair.get("priceUsd")
-
-
-                return float(price) if price else None
-
-
-        except:
-
+                # Prefer Raydium pair with highest liquidity
+                for pair in sorted(data['pairs'], key=lambda p: p.get('liquidity', {}).get('usd', 0), reverse=True):
+                    if pair.get('chainId') == 'solana' and pair.get('dexId') == 'raydium' and pair.get('priceUsd'):
+                        return float(pair['priceUsd'])
+                # Fallback to any Solana pair
+                for pair in data['pairs']:
+                    if pair.get('chainId') == 'solana' and pair.get('priceUsd'):
+                        return float(pair['priceUsd'])
+                return None
+        except Exception as e:
+            logging.error(f"DexScreener error for {token_address}: {e}")
             return None
 
-
-    # ====================== SCANNER ======================
-
-    async def scan_for_opportunities(
-
-        self,
-
-        session: aiohttp.ClientSession
-
-    ):
-
-
-        tokens_to_scan = list(self.tokens.items())
-
+    async def scan_for_opportunities(self, session: aiohttp.ClientSession):
+        # Limit to top 30 tokens (can sort by liquidity/volume later)
+        tokens_to_scan = list(self.tokens.items())[:30]
 
         for symbol, info in tokens_to_scan:
-
-
-            address = info["address"]
-
-
-            price = await self.get_dexscreener_price(
-
-                session,
-
-                address
-
-            )
-
-
-            if not price:
-
+            address = info['address']
+        
+            ds_price = await self.get_dexscreener_price(session, address)
+            if ds_price is None:
                 continue
 
+            # Get liquidity from DexScreener pair (add filter)
+            liquidity_usd = 0
+            try:
+                url = f"https://api.dexscreener.com/latest/dex/tokens/{address}"
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if 'pairs' in data and data['pairs']:
+                            # Take best Raydium pair liquidity
+                            raydium_pair = next((p for p in data['pairs'] if p.get('dexId') == 'raydium'), None)
+                            if raydium_pair:
+                                liquidity_usd = raydium_pair.get('liquidity', {}).get('usd', 0)
+            except Exception as e:
+                logging.debug(f"Liquidity fetch error for {symbol}: {e}")
 
-            logging.info(
+            # Skip low liquidity (< $50k example)
+            if liquidity_usd < 50000:
+                logging.debug(f"Skipping {symbol} - low liquidity ${liquidity_usd:,.0f}")
+                continue
 
-                f"{symbol} price ${price:.6f}"
+            baseline_price = ds_price
+            diff_pct = 0.0  # Placeholder - real diff when Jupiter fixed
+            logging.info(f"{symbol}: DS ${ds_price:.6f} (baseline) | Liquidity ${liquidity_usd:,.0f}")
 
-            )
+            # Example: flag high-potential tokens (expand when Jupiter works)
+            if liquidity_usd > 100000:  # example filter for better ops
+                logging.info(f"High-potential token {symbol} - Liquidity ${liquidity_usd:,.0f}")
+                # TODO: add real diff check and arb execution here
 
-
-    # ====================== JUPITER ======================
-
-    async def get_jupiter_quote(
-
-        self,
-
-        session,
-
-        amount_lamports: int
-
-    ):
-
-
+    async def get_jupiter_quote(self, session, amount_lamports: int):
         params = {
-
             "inputMint": self.sol,
-
             "outputMint": self.usdc,
-
             "amount": amount_lamports,
-
             "swapMode": "ExactIn",
-
             "slippageBps": self.config["slippage_bps"],
-
+            "wrapUnwrapSOL": "true",
         }
 
-
         try:
-
             async with session.get(
-
                 JUPITER_QUOTE_URL,
-
                 params=params,
-
-                headers=JUPITER_HEADERS
-
+                headers=JUPITER_HEADERS,
             ) as resp:
-
-
                 if resp.status != 200:
-
+                    logging.error(f"Jupiter HTTP {resp.status}")
                     return None
 
-
                 data = await resp.json()
-
-
                 routes = data.get("data")
-
-
                 return routes[0] if routes else None
 
-
-        except:
-
+        except Exception as e:
+            logging.error(f"Jupiter quote error: {e}")
             return None
 
-
 # ====================== FASTAPI ======================
-
-
-app = FastAPI()
-
+app = FastAPI(title="Solana Arb Bot")
 
 app.add_middleware(
-
     CORSMiddleware,
-
     allow_origins=["*"],
-
     allow_methods=["*"],
-
     allow_headers=["*"],
-
 )
 
-
 bot = ArbitrageBot()
-
 security = HTTPBearer()
 
-
 async def verify_api_key(
-
-    credentials:
-
-    HTTPAuthorizationCredentials = Depends(security)
-
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-
-
     if credentials.credentials != API_KEY:
-
-        raise HTTPException(401)
-
-
+        raise HTTPException(401, "Invalid API key")
     return credentials
 
-
 # ====================== ROUTES ======================
-
+@app.get("/status")
+async def status():
+    return {"running": bot.running}
 
 @app.get("/")
-
 async def root():
-
-    return {
-
-        "status": "running"
-
-    }
-
+    return {"message": "Solana arbitrage bot is running", "owner": "DEV"}
 
 @app.post("/start")
-
-async def start(
-
-    _: dict = Depends(verify_api_key)
-
-):
-
-
+async def start(_: dict = Depends(verify_api_key)):
     bot.running = True
-
-    return {"started": True}
-
+    return {"status": "started"}
 
 @app.post("/stop")
-
-async def stop(
-
-    _: dict = Depends(verify_api_key)
-
-):
-
-
+async def stop(_: dict = Depends(verify_api_key)):
     bot.running = False
+    return {"status": "stopped"}
 
-    return {"stopped": True}
+# ====================== SANITY TEST ======================
+@app.get("/jup-test")
+async def jup_test():
+    timeout = ClientTimeout(total=10)
 
+    connector = TCPConnector(
+        resolver=ThreadedResolver(),  # DNS FIX
+        ssl=False,
+    )
 
-# ====================== MAIN LOOP ======================
+    async with aiohttp.ClientSession(
+        timeout=timeout,
+        connector=connector,
+    ) as session:
+        quote = await bot.get_jupiter_quote(
+            session,
+            int(0.05 * 1e9),
+        )
 
+        if not quote:
+            return {"error": "No route returned"}
 
+        return {
+            "inAmount": quote["inAmount"],
+            "outAmount": quote["outAmount"],
+            "priceImpactPct": quote.get("priceImpactPct"),
+        }
+
+# ====================== BACKGROUND BOT LOOP ======================
 async def run_bot():
-
-
-    logging.info("Bot started")
-
+    #Fetch tokens only once at startup
+    if not bot.tokens:
+        await bot.fetch_solana_tokens()
+    logging.info(f"Bot startup complete with {len(bot.tokens)} tokens")
 
     while True:
+        if bot.running:
+            logging.info(f"[{datetime.now().strftime('%H:%M:%S')}] Scanning {len(bot.tokens)} tokens...")
+            async with aiohttp.ClientSession() as session:
+                await bot.scan_for_opportunities(session)
+        await asyncio.sleep(180) #3 minutes - adjusttable (120-300s is best)      
 
-
-        try:
-
-
-            now = asyncio.get_event_loop().time()
-
-
-            # refresh every 10 min
-
-
-            if now - bot.last_token_refresh > 600:
-
-
-                await bot.fetch_solana_tokens()
-
-
-            if bot.running:
-
-
-                logging.info(
-
-                    f"[{datetime.now().strftime('%H:%M:%S')}] "
-
-                    f"Scanning {len(bot.tokens)} tokens"
-
-                )
-
-
-                async with aiohttp.ClientSession() as session:
-
-
-                    await bot.scan_for_opportunities(
-
-                        session
-
-                    )
-
-
-        except Exception as e:
-
-
-            logging.error(e)
-
-
-        await asyncio.sleep(60)
-
-
-# ====================== STARTUP ======================
-
-
+# Start the background loop when the app starts
 @app.on_event("startup")
-
 async def startup_event():
-
-
     asyncio.create_task(run_bot())
 
-
-# ====================== MAIN ======================
-
-
 if __name__ == "__main__":
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
 
 
-    uvicorn.run(
 
-        "server:app",
-
-        host="0.0.0.0",
-
-        port=8000
-
-    )
 
 
