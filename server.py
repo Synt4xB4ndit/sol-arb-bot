@@ -66,93 +66,95 @@ class ArbitrageBot:
         }
 
     async def fetch_solana_tokens(self):
-        logging.info("Fetching Solana tokens from CoinGecko (patient retry mode)...")
-        async with aiohttp.ClientSession() as session:
-            # Step 1: Get coins with platforms
-            list_url = "https://api.coingecko.com/api/v3/coins/list?include_platform=true"
-            all_coins = None
-            try:
-                async with session.get(list_url) as resp:
-                    if resp.status == 200:
-                        all_coins = await resp.json()
-                        logging.info(f"Received {len(all_coins)} total coins from /list")
-                    else:
-                        logging.error(f"CoinGecko list failed: {resp.status}")
-            except Exception as e:
-                logging.error(f"List fetch error: {e}")
 
-            sol_tokens = []
-            if all_coins:
-                for coin in all_coins:
-                    sol_addr = coin.get('platforms', {}).get('solana')
-                    if sol_addr and isinstance(sol_addr, str) and len(sol_addr) > 30:
-                        sol_tokens.append({
-                            'id': coin['id'],
-                            'symbol': coin['symbol'].upper(),
-                            'address': sol_addr
-                        })
-                logging.info(f"Found {len(sol_tokens)} potential Solana tokens")
+        logging.info("Fetching Solana tokens from CoinGecko (correct method)...")
 
-            # Step 2: Get market cap if we have tokens, with longer patience
-            if sol_tokens:
-                ids = ','.join(t['id'] for t in sol_tokens[:250])
-                markets_url = "https://api.coingecko.com/api/v3/coins/markets"
-                params = {
-                    'vs_currency': 'usd',
-                    'ids': ids,
-                    'order': 'market_cap_desc',
-                    'per_page': 250,
-                    'page': 1,
-                }
+        url = "https://api.coingecko.com/api/v3/coins/markets"
 
-                max_retries = 4
-                for attempt in range(max_retries):
-                    try:
-                        async with session.get(markets_url, params=params) as resp:
-                            if resp.status == 429:
-                                wait_time = 90  # longer wait
-                                logging.warning(f"Rate limit hit (429) - waiting {wait_time}s before retry {attempt+1}/{max_retries}")
-                                await asyncio.sleep(wait_time)
+        params = {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": 250,
+            "page": 1,
+            "sparkline": "false",
+        }
+
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "SolanaArbBot/1.0"
+        }
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+
+            for attempt in range(5):
+
+                try:
+
+                    async with session.get(url, params=params) as resp:
+
+                        if resp.status == 429:
+
+                            wait = 60 * (attempt + 1)
+
+                            logging.warning(f"429 received. Waiting {wait}s...")
+                            await asyncio.sleep(wait)
+                            continue
+
+
+                        if resp.status != 200:
+
+                            logging.error(f"CoinGecko error: {resp.status}")
+                            continue
+
+
+                        data = await resp.json()
+
+                        logging.info(f"Received {len(data)} market tokens")
+
+                        self.tokens = {}
+
+                        for coin in data:
+
+                            market_cap = coin.get("market_cap", 0)
+
+                            if market_cap < 1_000_000:
                                 continue
-                            if resp.status == 200:
-                                data = await resp.json()
-                                self.tokens = {}
-                                for market in data:
-                                    market_cap = market.get('market_cap') or 0
-                                    if market_cap > 1_000_000:
-                                        symbol = market['symbol'].upper()
-                                        for t in sol_tokens:
-                                            if t['id'] == market['id']:
-                                                self.tokens[symbol] = {'address': t['address']}
-                                                break
-                                logging.info(f"Loaded {len(self.tokens)} Solana tokens > $1M MC from API")
-                                if len(self.tokens) > 0:
-                                    return  # success
-                            else:
-                                logging.error(f"Markets fetch failed: {resp.status}")
-                    except Exception as e:
-                        logging.error(f"Markets fetch error on attempt {attempt+1}: {e}")
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(45)
-                        else:
-                            break
 
-            # Fallback if API failed or loaded 0 tokens
-            logging.warning("API fetch did not load tokens - using hardcoded fallback list")
-            fallback = {
-                'BONK': {'address': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'},
-                'WIF': {'address': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm'},
-                'POPCAT': {'address': '7GCihgDB8fe7C6mU8q3g8x3a3y3a3y3a3y3a3y3a3y'},  # real address
-                'MEW': {'address': 'MEW1gQWJ3nEXg9q5vB9g4v9vB9g4v9vB9g4v9vB9g4v9v'},  # real
-                'GIGA': {'address': 'GIGA1gQWJ3nEXg9q5vB9g4v9vB9g4v9vB9g4v9vB9g4v9v'},  # real
-                'MOTHER': {'address': 'MOTHER1gQWJ3nEXg9q5vB9g4v9vB9g4v9vB9g4v9vB9g4v9v'},  # real
-                'GME': {'address': '8i51XNNpGa3D9zXhK4X4g6g6g6g6g6g6g6g6g6g6g6g6'},  # real example
-                'BODEN': {'address': '3XTp12PmKMHx4v2b2e8g6g6g6g6g6g6g6g6g6g6g6g6g6g'},  # real
-                'TRUMP': {'address': '6n7p8r9t0u1v2w3x4y5z6a7b8c9d0e1f2g3h4i5j6k7l8m9'},  # real
-                'GOAT': {'address': '9n0p1q2r3s4t5u6v7w8x9y0z1a2b3c4d5e6f7g8h9i0j1k2l3m4'},  # real
-            }
-            self.tokens = fallback
-            logging.info(f"Loaded {len(self.tokens)} fallback tokens (known memecoins)")
+                            platforms = coin.get("platforms", {})
+
+                            sol_address = platforms.get("solana")
+
+                            if not sol_address:
+                                continue
+
+                            symbol = coin["symbol"].upper()
+
+                            self.tokens[symbol] = {
+                                "address": sol_address
+                            }
+
+
+                        logging.info(f"Loaded {len(self.tokens)} Solana tokens successfully")
+
+                        if self.tokens:
+                            return
+
+
+                except Exception as e:
+
+                    logging.error(f"Error fetching tokens: {e}")
+
+                    await asyncio.sleep(30)
+
+
+        logging.warning("Using fallback tokens")
+
+        self.tokens = {
+            'BONK': {'address': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'},
+            'WIF': {'address': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm'},
+            'POPCAT': {'address': '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr'}
+            'TRUMP': {'address': '6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN'},
+        }
 
     async def get_dexscreener_price(self, session: aiohttp.ClientSession, token_address: str) -> Optional[float]:
         url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
