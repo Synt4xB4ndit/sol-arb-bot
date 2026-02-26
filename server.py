@@ -1,187 +1,306 @@
-import os
-import asyncio
+# =============================
+# SOLANA ARBITRAGE BOT - PRODUCTION VERSION (FREE APIs)
+# Simulation mode enabled by default
+# =============================
+
 import aiohttp
-import base64
+import asyncio
+import os
+import base58
 import logging
-from fastapi import FastAPI, Header
+from datetime import datetime
+from typing import Optional, Dict
+
 from solders.keypair import Keypair
+from solders.transaction import VersionedTransaction
+
 from solana.rpc.async_api import AsyncClient
+from solana.rpc.types import TxOpts
+from solana.rpc.commitment import Confirmed
 
-# =========================
-# CONFIG
-# =========================
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 
-RPC_URL = os.getenv("SOLANA_RPC_URL")
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
-BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY")
-API_KEY = os.getenv("API_KEY")
+from dotenv import load_dotenv
+import uvicorn
 
+# =============================
+# ENVIRONMENT
+# =============================
+
+load_dotenv()
+
+API_KEY = os.getenv("API_KEY", "change_me")
+BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
+RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+PRIVATE_KEY = os.getenv("PRIVATE_KEY", "")
 SIMULATION_MODE = os.getenv("SIMULATION_MODE", "true").lower() == "true"
 
-TRADE_SIZE_USD = 25
-MIN_PROFIT_USD = 0.30
+# =============================
+# CONSTANTS
+# =============================
 
 JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
 JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
 
-logging.basicConfig(level=logging.INFO)
+SOL_MINT = "So11111111111111111111111111111111111111112"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
-# =========================
-# INIT
-# =========================
+TRADE_AMOUNT_SOL = 0.05
+MIN_PROFIT_USD = 0.10
+SLIPPAGE_BPS = 100
 
-app = FastAPI()
+# =============================
+# LOGGING
+# =============================
 
-client = AsyncClient(RPC_URL)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
-wallet = Keypair.from_base58_string(PRIVATE_KEY)
+# =============================
+# GLOBAL STATE
+# =============================
 
 bot_running = False
 
-tokens = {}
+# =============================
+# WALLET
+# =============================
 
-# =========================
-# TOKEN DISCOVERY
-# =========================
+if PRIVATE_KEY:
+
+    decoded = base58.b58decode(PRIVATE_KEY)
+
+    wallet = Keypair.from_bytes(decoded)
+
+else:
+
+    wallet = None
+
+# =============================
+# CLIENT
+# =============================
+
+client = AsyncClient(RPC_URL)
+
+# =============================
+# TOKEN STORAGE
+# =============================
+
+tokens: Dict[str, str] = {}
+
+# =============================
+# FETCH TOKENS FROM BIRDEYE
+# =============================
 
 async def fetch_tokens():
 
-    url = "https://public-api.birdeye.so/defi/tokenlist"
+    global tokens
 
-    headers = {
-        "X-API-KEY": BIRDEYE_API_KEY
-    }
+    if not BIRDEYE_API_KEY:
 
-    async with aiohttp.ClientSession() as session:
+        logging.warning("No Birdeye API key set")
 
-        async with session.get(url, headers=headers) as resp:
+        return
 
-            data = await resp.json()
+    try:
 
-            token_list = data["data"]["tokens"]
+        url = "https://public-api.birdeye.so/defi/tokenlist"
 
-            tokens.clear()
+        headers = {
+            "X-API-KEY": BIRDEYE_API_KEY
+        }
 
-            for token in token_list[:50]:
+        params = {
+            "sort_by": "v24hUSD",
+            "sort_type": "desc",
+            "offset": 0,
+            "limit": 50
+        }
 
-                tokens[token["symbol"]] = token["address"]
+        async with aiohttp.ClientSession() as session:
 
-    logging.info(f"{len(tokens)} tokens loaded")
+            async with session.get(url, headers=headers, params=params) as resp:
 
+                if resp.status != 200:
 
-# =========================
-# GET PRICE FROM JUPITER
-# =========================
+                    logging.error(f"Birdeye error {resp.status}")
+
+                    return
+
+                data = await resp.json()
+
+                if "data" not in data:
+
+                    logging.error("Invalid Birdeye response")
+
+                    return
+
+                token_list = data["data"]["tokens"]
+
+                tokens.clear()
+
+                for token in token_list:
+
+                    tokens[token["symbol"]] = token["address"]
+
+                logging.info(f"Loaded {len(tokens)} tokens")
+
+    except Exception as e:
+
+        logging.error(f"Fetch token error {e}")
+
+# =============================
+# JUPITER QUOTE
+# =============================
 
 async def get_quote(session, input_mint, output_mint, amount):
 
     params = {
-
         "inputMint": input_mint,
-
         "outputMint": output_mint,
-
         "amount": amount,
-
-        "slippageBps": 50
-
+        "slippageBps": SLIPPAGE_BPS
     }
 
     async with session.get(JUPITER_QUOTE_URL, params=params) as resp:
 
+        if resp.status != 200:
+
+            return None
+
         data = await resp.json()
 
-        if "data" not in data:
+        if "data" not in data or not data["data"]:
 
             return None
 
         return data["data"][0]
 
-
-# =========================
+# =============================
 # EXECUTE SWAP
-# =========================
+# =============================
 
-async def execute_swap(session, quote):
+async def execute_swap(route):
 
     if SIMULATION_MODE:
 
         logging.info("SIMULATION: Swap skipped")
 
-        return True
+        return
 
+    try:
 
-    payload = {
+        async with aiohttp.ClientSession() as session:
 
-        "quoteResponse": quote,
+            payload = {
+                "route": route,
+                "userPublicKey": str(wallet.pubkey()),
+                "wrapUnwrapSOL": True
+            }
 
-        "userPublicKey": str(wallet.pubkey()),
+            async with session.post(JUPITER_SWAP_URL, json=payload) as resp:
 
-        "wrapUnwrapSOL": True
+                data = await resp.json()
 
-    }
+                swap_tx = data["swapTransaction"]
 
-    async with session.post(JUPITER_SWAP_URL, json=payload) as resp:
+                tx = VersionedTransaction.from_bytes(
+                    base58.b58decode(swap_tx)
+                )
 
-        swap_data = await resp.json()
+                result = await client.send_transaction(
+                    tx,
+                    opts=TxOpts(skip_preflight=True)
+                )
 
-        txn = base64.b64decode(swap_data["swapTransaction"])
+                logging.info(f"EXECUTED: {result.value}")
 
-        tx = txn
+    except Exception as e:
 
-        result = await client.send_raw_transaction(tx)
+        logging.error(f"Swap failed {e}")
 
-        logging.info(result)
-
-        return True
-
-
-# =========================
-# ARBITRAGE LOGIC
-# =========================
+# =============================
+# SCAN
+# =============================
 
 async def scan():
 
-    sol_mint = "So11111111111111111111111111111111111111112"
+    if not tokens:
+
+        return
+
+    amount = int(TRADE_AMOUNT_SOL * 1e9)
 
     async with aiohttp.ClientSession() as session:
 
-        for symbol, mint in tokens.items():
+        sol_price_route = await get_quote(
+            session,
+            SOL_MINT,
+            USDC_MINT,
+            amount
+        )
+
+        if not sol_price_route:
+
+            return
+
+        sol_price = float(sol_price_route["outAmount"]) / 1e6
+
+        for symbol, address in tokens.items():
 
             try:
 
-                quote1 = await get_quote(
+                buy_route = await get_quote(
                     session,
-                    sol_mint,
-                    mint,
-                    10000000
+                    SOL_MINT,
+                    address,
+                    amount
                 )
 
-                quote2 = await get_quote(
+                if not buy_route:
+                    continue
+
+                token_amount = int(buy_route["outAmount"])
+
+                sell_route = await get_quote(
                     session,
-                    mint,
-                    sol_mint,
-                    int(quote1["outAmount"])
+                    address,
+                    SOL_MINT,
+                    token_amount
                 )
 
-                profit = int(quote2["outAmount"]) - 10000000
+                if not sell_route:
+                    continue
 
-                profit_usd = profit / 1e9 * 150
+                sol_received = int(sell_route["outAmount"]) / 1e9
+
+                profit = sol_received - TRADE_AMOUNT_SOL
+
+                profit_usd = profit * sol_price
+
+                logging.info(
+                    f"{symbol} Profit: ${profit_usd:.4f}"
+                )
 
                 if profit_usd > MIN_PROFIT_USD:
 
-                    logging.info(f"PROFIT FOUND {symbol}: ${profit_usd}")
+                    logging.info(
+                        f"ARBITRAGE FOUND {symbol} ${profit_usd:.4f}"
+                    )
 
-                    await execute_swap(session, quote1)
+                    await execute_swap(buy_route)
 
-            except:
+            except Exception as e:
 
-                continue
+                logging.error(e)
 
-
-# =========================
-# MAIN LOOP
-# =========================
+# =============================
+# BOT LOOP
+# =============================
 
 async def bot_loop():
 
@@ -189,66 +308,109 @@ async def bot_loop():
 
     while True:
 
-        if bot_running:
+        try:
 
-            await fetch_tokens()
+            if bot_running:
 
-            await scan()
+                logging.info("Refreshing token list...")
 
-        await asyncio.sleep(10)
+                await fetch_tokens()
 
+                logging.info("Scanning...")
 
-# =========================
-# API CONTROL
-# =========================
+                await scan()
 
-@app.on_event("startup")
+        except Exception as e:
 
-async def startup():
+            logging.error(e)
 
-    asyncio.create_task(bot_loop())
+        await asyncio.sleep(600)
 
+# =============================
+# FASTAPI
+# =============================
+
+app = FastAPI()
+
+security = HTTPBearer()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =============================
+# AUTH
+# =============================
+
+async def verify_key(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+
+    if credentials.credentials != API_KEY:
+
+        raise HTTPException(401)
+
+# =============================
+# ROUTES
+# =============================
+
+@app.get("/")
+async def root():
+
+    return {
+        "status": "online",
+        "simulation": SIMULATION_MODE
+    }
 
 @app.post("/start")
-
-async def start(x_api_key: str = Header()):
+async def start(_: str = Depends(verify_key)):
 
     global bot_running
-
-    if x_api_key != API_KEY:
-
-        return {"error": "unauthorized"}
 
     bot_running = True
 
     return {"status": "started"}
 
-
 @app.post("/stop")
-
-async def stop(x_api_key: str = Header()):
+async def stop(_: str = Depends(verify_key)):
 
     global bot_running
-
-    if x_api_key != API_KEY:
-
-        return {"error": "unauthorized"}
 
     bot_running = False
 
     return {"status": "stopped"}
 
-
 @app.get("/status")
-
 async def status():
 
     return {
-
         "running": bot_running,
-
         "simulation": SIMULATION_MODE
-
     }
+
+# =============================
+# STARTUP
+# =============================
+
+@app.on_event("startup")
+async def startup():
+
+    asyncio.create_task(bot_loop())
+
+# =============================
+# MAIN
+# =============================
+
+if __name__ == "__main__":
+
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=8000
+    )
+
 
 
