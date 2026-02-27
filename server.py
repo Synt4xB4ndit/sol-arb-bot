@@ -325,7 +325,7 @@ async def bot_loop():
 
             logging.error(e)
 
-        await asyncio.sleep(600)
+        await asyncio.sleep(10)
 
 # =============================
 # FASTAPI
