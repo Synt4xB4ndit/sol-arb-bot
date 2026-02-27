@@ -111,8 +111,6 @@ async def fetch_tokens():
     }
 
     params = {
-        "sort_by": "v24hUSD",
-        "sort_type": "desc",
         "limit": 50
     }
 
