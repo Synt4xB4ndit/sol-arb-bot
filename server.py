@@ -97,61 +97,64 @@ tokens: Dict[str, str] = {}
 # =============================
 
 async def fetch_tokens():
-
     global tokens
 
     if not BIRDEYE_API_KEY:
-
-        logging.warning("No Birdeye API key set")
-
+        logging.warning("BIRDEYE_API_KEY not set")
         return
 
+    url = "https://public-api.birdeye.so/defi/v3/token/list"
+
+    headers = {
+        "X-API-KEY": BIRDEYE_API_KEY,
+        "accept": "application/json"
+    }
+
+    params = {
+        "sort_by": "v24hUSD",
+        "sort_type": "desc",
+        "limit": 50
+    }
+
     try:
-
-        url = "https://public-api.birdeye.so/defi/tokenlist"
-
-        headers = {
-            "X-API-KEY": BIRDEYE_API_KEY
-        }
-
-        params = {
-            "sort_by": "v24hUSD",
-            "sort_type": "desc",
-            "offset": 0,
-            "limit": 50
-        }
-
         async with aiohttp.ClientSession() as session:
-
             async with session.get(url, headers=headers, params=params) as resp:
 
                 if resp.status != 200:
-
-                    logging.error(f"Birdeye error {resp.status}")
-
+                    text = await resp.text()
+                    logging.error(f"Birdeye error {resp.status}: {text}")
                     return
 
                 data = await resp.json()
 
                 if "data" not in data:
-
-                    logging.error("Invalid Birdeye response")
-
+                    logging.error(f"Unexpected Birdeye response: {data}")
                     return
 
-                token_list = data["data"]["tokens"]
+                token_data = data["data"]
+
+                # Some v3 responses wrap items inside "items"
+                if isinstance(token_data, dict) and "items" in token_data:
+                    token_list = token_data["items"]
+                elif isinstance(token_data, list):
+                    token_list = token_data
+                else:
+                    logging.error(f"Unexpected token structure: {token_data}")
+                    return
 
                 tokens.clear()
 
                 for token in token_list:
+                    symbol = token.get("symbol")
+                    address = token.get("address")
 
-                    tokens[token["symbol"]] = token["address"]
+                    if symbol and address:
+                        tokens[symbol] = address
 
-                logging.info(f"Loaded {len(tokens)} tokens")
+                logging.info(f"Loaded {len(tokens)} tokens from Birdeye v3")
 
     except Exception as e:
-
-        logging.error(f"Fetch token error {e}")
+        logging.error(f"fetch_tokens failed: {e}")
 
 # =============================
 # JUPITER QUOTE
