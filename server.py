@@ -180,16 +180,16 @@ async def fetch_tokens():
                         if market_cap < 1_000_000:
                             continue
 
-                        if liquidity < 150_000:
+                        if liquidity < 100_000:
                             continue
 
-                        if volume_24h < (0.75 * market_cap):
+                        if volume_24h < 50_000:
                             continue
 
-                        if volume_24h > (3 * market_cap):
+                        if volume_24h > (2 * market_cap):
                             continue
 
-                        if price_change > 40:
+                        if price_change > 35:
                             continue
 
                         filtered[symbol] = address
