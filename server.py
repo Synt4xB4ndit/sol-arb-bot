@@ -115,7 +115,7 @@ async def fetch_tokens():
     }
 
     params = {
-        "limit": 200  # pull more so we can filter harder
+        "limit": 99  # pull more so we can filter harder
     }
 
     try:
