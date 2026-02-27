@@ -183,7 +183,7 @@ async def fetch_tokens():
                         if liquidity < 100_000:
                             continue
 
-                        if volume_24h < 50_000:
+                        if volume_24h < 500_000:
                             continue
 
                         if volume_24h > (2 * market_cap):
