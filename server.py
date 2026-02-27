@@ -100,6 +100,10 @@ tokens: Dict[str, str] = {}
 # FETCH TOKENS WITH STRICT FILTERING
 # =============================
 
+# =============================
+# FETCH TOKENS WITH OVERVIEW FILTERING
+# =============================
+
 async def fetch_tokens():
     global tokens
 
@@ -107,7 +111,8 @@ async def fetch_tokens():
         logging.warning("BIRDEYE_API_KEY not set")
         return
 
-    url = "https://public-api.birdeye.so/defi/v3/token/list"
+    list_url = "https://public-api.birdeye.so/defi/v3/token/list"
+    overview_url = "https://public-api.birdeye.so/defi/token_overview"
 
     headers = {
         "X-API-KEY": BIRDEYE_API_KEY,
@@ -115,46 +120,58 @@ async def fetch_tokens():
     }
 
     params = {
-        "limit": 99  # pull more so we can filter harder
+        "limit": 99
     }
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params) as resp:
+
+            # -----------------------------
+            # STEP 1: GET TOKEN LIST
+            # -----------------------------
+            async with session.get(list_url, headers=headers, params=params) as resp:
 
                 if resp.status != 200:
                     text = await resp.text()
-                    logging.error(f"Birdeye error {resp.status}: {text}")
+                    logging.error(f"Birdeye list error {resp.status}: {text}")
                     return
 
                 data = await resp.json()
+                token_list = data.get("data", [])
 
-                if "data" not in data:
-                    logging.error(f"Unexpected Birdeye response: {data}")
-                    return
+                if isinstance(token_list, dict) and "items" in token_list:
+                    token_list = token_list["items"]
 
-                token_data = data["data"]
+            filtered = {}
 
-                if isinstance(token_data, dict) and "items" in token_data:
-                    token_list = token_data["items"]
-                elif isinstance(token_data, list):
-                    token_list = token_data
-                else:
-                    logging.error(f"Unexpected token structure: {token_data}")
-                    return
+            # -----------------------------
+            # STEP 2: EVALUATE EACH TOKEN
+            # -----------------------------
+            for token in token_list:
 
-                filtered = {}
+                symbol = token.get("symbol")
+                address = token.get("address")
 
-                for token in token_list:
+                if not symbol or not address:
+                    continue
 
-                    try:
-                        symbol = token.get("symbol")
-                        address = token.get("address")
+                try:
+                    async with session.get(
+                        overview_url,
+                        headers=headers,
+                        params={"address": address}
+                    ) as overview_resp:
 
-                        market_cap = float(token.get("marketCap", 0))
-                        liquidity = float(token.get("liquidity", 0))
-                        volume_24h = float(token.get("volume24h", 0))
-                        price_change = abs(float(token.get("priceChange24h", 0)))
+                        if overview_resp.status != 200:
+                            continue
+
+                        overview_data = await overview_resp.json()
+                        overview = overview_data.get("data", {})
+
+                        market_cap = float(overview.get("marketCap", 0))
+                        liquidity = float(overview.get("liquidity", 0))
+                        volume_24h = float(overview.get("volume24h", 0))
+                        price_change = abs(float(overview.get("priceChange24h", 0)))
 
                         # -----------------------------
                         # STRICT FILTER CONDITIONS
@@ -172,19 +189,18 @@ async def fetch_tokens():
                         if volume_24h > (3 * market_cap):
                             continue
 
-                        if price_change > 40:  # avoid extreme pump/dump
+                        if price_change > 40:
                             continue
 
-                        if symbol and address:
-                            filtered[symbol] = address
+                        filtered[symbol] = address
 
-                    except Exception:
-                        continue
+                except Exception:
+                    continue
 
-                tokens.clear()
-                tokens.update(filtered)
+            tokens.clear()
+            tokens.update(filtered)
 
-                logging.info(f"Filtered tokens: {len(tokens)} viable candidates")
+            logging.info(f"Filtered tokens: {len(tokens)} viable candidates")
 
     except Exception as e:
         logging.error(f"fetch_tokens failed: {e}")
@@ -338,26 +354,26 @@ async def scan():
 # BOT LOOP
 # =============================
 
-async def bot_loop():
+last_refresh = 0
 
-    global bot_running
+async def bot_loop():
+    global bot_running, last_refresh
 
     while True:
-
         try:
-
             if bot_running:
 
-                logging.info("Refreshing token list...")
+                now = asyncio.get_event_loop().time()
 
-                await fetch_tokens()
+                if now - last_refresh > 300:  # 5 minutes
+                    logging.info("Refreshing token list...")
+                    await fetch_tokens()
+                    last_refresh = now
 
                 logging.info("Scanning...")
-
                 await scan()
 
         except Exception as e:
-
             logging.error(e)
 
         await asyncio.sleep(10)
