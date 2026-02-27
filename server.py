@@ -96,6 +96,10 @@ tokens: Dict[str, str] = {}
 # FETCH TOKENS FROM BIRDEYE
 # =============================
 
+# =============================
+# FETCH TOKENS WITH STRICT FILTERING
+# =============================
+
 async def fetch_tokens():
     global tokens
 
@@ -111,7 +115,7 @@ async def fetch_tokens():
     }
 
     params = {
-        "limit": 50
+        "limit": 200  # pull more so we can filter harder
     }
 
     try:
@@ -131,7 +135,6 @@ async def fetch_tokens():
 
                 token_data = data["data"]
 
-                # Some v3 responses wrap items inside "items"
                 if isinstance(token_data, dict) and "items" in token_data:
                     token_list = token_data["items"]
                 elif isinstance(token_data, list):
@@ -140,16 +143,48 @@ async def fetch_tokens():
                     logging.error(f"Unexpected token structure: {token_data}")
                     return
 
-                tokens.clear()
+                filtered = {}
 
                 for token in token_list:
-                    symbol = token.get("symbol")
-                    address = token.get("address")
 
-                    if symbol and address:
-                        tokens[symbol] = address
+                    try:
+                        symbol = token.get("symbol")
+                        address = token.get("address")
 
-                logging.info(f"Loaded {len(tokens)} tokens from Birdeye v3")
+                        market_cap = float(token.get("marketCap", 0))
+                        liquidity = float(token.get("liquidity", 0))
+                        volume_24h = float(token.get("volume24h", 0))
+                        price_change = abs(float(token.get("priceChange24h", 0)))
+
+                        # -----------------------------
+                        # STRICT FILTER CONDITIONS
+                        # -----------------------------
+
+                        if market_cap < 1_000_000:
+                            continue
+
+                        if liquidity < 150_000:
+                            continue
+
+                        if volume_24h < (0.75 * market_cap):
+                            continue
+
+                        if volume_24h > (3 * market_cap):
+                            continue
+
+                        if price_change > 40:  # avoid extreme pump/dump
+                            continue
+
+                        if symbol and address:
+                            filtered[symbol] = address
+
+                    except Exception:
+                        continue
+
+                tokens.clear()
+                tokens.update(filtered)
+
+                logging.info(f"Filtered tokens: {len(tokens)} viable candidates")
 
     except Exception as e:
         logging.error(f"fetch_tokens failed: {e}")
