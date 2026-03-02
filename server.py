@@ -214,23 +214,29 @@ async def get_quote(session, input_mint, output_mint, amount):
     params = {
         "inputMint": input_mint,
         "outputMint": output_mint,
-        "amount": amount,
+        "amount": str(amount),   # must be string
         "slippageBps": SLIPPAGE_BPS
     }
 
-    async with session.get(JUPITER_QUOTE_URL, params=params) as resp:
+    url = "https://public.jupiterapi.com/v6/quote"
+
+    async with session.get(url, params=params) as resp:
 
         if resp.status != 200:
-
+            text = await resp.text()
+            logging.warning(f"Quote failed {resp.status}: {text}")
             return None
 
-        data = await resp.json()
+        raw_data = await resp.json()
 
-        if "data" not in data or not data["data"]:
+        # DEBUG (temporary — keep this for now)
+        logging.info(f"Raw quote response: {raw_data}")
 
-            return None
+        if "data" in raw_data and len(raw_data["data"]) > 0:
+            return raw_data["data"][0]
 
-        return data["data"][0]
+        logging.warning("No routes returned from Jupiter")
+        return None
 
 # =============================
 # EXECUTE SWAP
