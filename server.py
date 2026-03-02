@@ -170,7 +170,7 @@ async def fetch_tokens():
 
                         market_cap = float(overview.get("marketCap", 0))
                         liquidity = float(overview.get("liquidity", 0))
-                        volume_24h = float(overview.get("volume24hUSD", 0))
+                        volume_24h = float(overview.get("v24h", 0))
                         price_change = abs(float(overview.get("priceChange24h", 0)))
 
                         # -----------------------------
@@ -186,10 +186,10 @@ async def fetch_tokens():
                         if volume_24h < 100_000:
                             continue
 
-                        if volume_24h > (2 * market_cap):
-                            continue
+                        #if volume_24h > (2 * market_cap):
+                        #    continue
 
-                        if price_change > 35:
+                        if price_change > 60:
                             continue
 
                         filtered[symbol] = address
