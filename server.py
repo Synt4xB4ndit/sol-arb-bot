@@ -302,6 +302,8 @@ async def scan():
 
         sol_price = float(sol_price_route["outAmount"]) / 1e6
 
+        logging.info(f"Scanning {len(tokens)} tokens...")
+
         for symbol, address in tokens.items():
 
             try:
@@ -314,7 +316,8 @@ async def scan():
                 )
 
                 if not buy_route:
-                    continue
+                logging.info(f"{symbol}: No buy route")
+                continue
 
                 token_amount = int(buy_route["outAmount"])
 
@@ -326,29 +329,28 @@ async def scan():
                 )
 
                 if not sell_route:
+                    logging.info(f"{symbol}: No sell route")
                     continue
 
                 sol_received = int(sell_route["outAmount"]) / 1e9
 
                 profit = sol_received - TRADE_AMOUNT_SOL
-
                 profit_usd = profit * sol_price
 
                 logging.info(
-                    f"{symbol} Profit: ${profit_usd:.4f}"
+                    f"{symbol} | Profit: ${profit_usd:.6f}"
                 )
 
                 if profit_usd > MIN_PROFIT_USD:
 
                     logging.info(
-                        f"ARBITRAGE FOUND {symbol} ${profit_usd:.4f}"
+                        f"🚀 ARBITRAGE FOUND {symbol} ${profit_usd:.6f}"
                     )
 
                     await execute_swap(buy_route)
 
             except Exception as e:
-
-                logging.error(e)
+                logging.error(f"{symbol} error: {e}")
 
 # =============================
 # BOT LOOP
