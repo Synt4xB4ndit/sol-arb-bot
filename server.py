@@ -316,8 +316,8 @@ async def scan():
                 )
 
                 if not buy_route:
-                logging.info(f"{symbol}: No buy route")
-                continue
+                    logging.info(f"{symbol}: No buy route")
+                    continue
 
                 token_amount = int(buy_route["outAmount"])
 
