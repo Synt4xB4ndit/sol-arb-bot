@@ -120,7 +120,7 @@ async def fetch_tokens():
     }
 
     params = {
-        "limit": 99
+        "limit": 30
     }
 
     try:
@@ -376,7 +376,7 @@ async def bot_loop():
         except Exception as e:
             logging.error(e)
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(20)
 
 # =============================
 # FASTAPI
