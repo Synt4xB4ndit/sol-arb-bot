@@ -41,8 +41,8 @@ SIMULATION_MODE = os.getenv("SIMULATION_MODE", "true").lower() == "true"
 # CONSTANTS
 # =============================
 
-JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
-JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
+JUPITER_QUOTE_URL = "https://api.jup.ag/swap/v1/quote"
+JUPITER_SWAP_URL  = "https://api.jup.ag/swap/v1/swap"
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -214,28 +214,24 @@ async def get_quote(session, input_mint, output_mint, amount):
     params = {
         "inputMint": input_mint,
         "outputMint": output_mint,
-        "amount": str(amount),   # must be string
-        "slippageBps": SLIPPAGE_BPS
+        "amount": str(amount),
+        "slippageBps": SLIPPAGE_BPS,
+        "swapMode": "ExactIn"
     }
 
-    url = "https://quote-api.jup.ag/v6/quote"
-
-    async with session.get(url, params=params) as resp:
+    async with session.get(JUPITER_QUOTE_URL, params=params) as resp:
 
         if resp.status != 200:
             text = await resp.text()
             logging.warning(f"Quote failed {resp.status}: {text}")
             return None
 
-        raw_data = await resp.json()
+        data = await resp.json()
 
-        # DEBUG (temporary — keep this for now)
-        logging.info(f"Raw quote response: {raw_data}")
+        if "outAmount" in data:
+            return data
 
-        if "data" in raw_data and len(raw_data["data"]) > 0:
-            return raw_data["data"][0]
-
-        logging.warning("No routes returned from Jupiter")
+        logging.warning(f"No valid route returned: {data}")
         return None
 
 # =============================
@@ -255,7 +251,7 @@ async def execute_swap(route):
         async with aiohttp.ClientSession() as session:
 
             payload = {
-                "route": route,
+                "quoteResponse": route,
                 "userPublicKey": str(wallet.pubkey()),
                 "wrapUnwrapSOL": True
             }
