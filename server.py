@@ -8,6 +8,7 @@ import asyncio
 import os
 import base58
 import logging
+import requests
 from datetime import datetime
 from typing import Optional, Dict
 
@@ -36,6 +37,7 @@ BIRDEYE_API_KEY = os.getenv("BIRDEYE_API_KEY", "")
 RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 PRIVATE_KEY = os.getenv("PRIVATE_KEY", "")
 SIMULATION_MODE = os.getenv("SIMULATION_MODE", "true").lower() == "true"
+JUPITER_API_KEY = os.getenv("JUPITER_API_KEY")
 
 # =============================
 # CONSTANTS
@@ -209,17 +211,34 @@ async def fetch_tokens():
 # JUPITER QUOTE
 # =============================
 
+# =============================
+# JUPITER QUOTE
+# =============================
+
 async def get_quote(session, input_mint, output_mint, amount):
+
+    if not JUPITER_API_KEY:
+        logging.warning("JUPITER_API_KEY not set")
+        return None
 
     params = {
         "inputMint": input_mint,
         "outputMint": output_mint,
         "amount": str(amount),
-        "slippageBps": SLIPPAGE_BPS,
-        "swapMode": "ExactIn"
+        "slippageBps": str(SLIPPAGE_BPS),
+        "swapMode": "ExactIn",
+        "restrictIntermediateTokens": "true"
     }
 
-    async with session.get(JUPITER_QUOTE_URL, params=params) as resp:
+    headers = {
+        "x-api-key": JUPITER_API_KEY
+    }
+
+    async with session.get(
+        JUPITER_QUOTE_URL,
+        params=params,
+        headers=headers
+    ) as resp:
 
         if resp.status != 200:
             text = await resp.text()
