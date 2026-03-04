@@ -8,7 +8,6 @@ import asyncio
 import os
 import base58
 import logging
-import requests
 from datetime import datetime
 from typing import Optional, Dict
 
