@@ -200,19 +200,19 @@ async def fetch_tokens():
                         # STRICT FILTER CONDITIONS
                         # -----------------------------
 
-                        if market_cap < 1_000_000:
+                        if market_cap < 500_000:
                             continue
 
-                        if liquidity < 100_000:
+                        if liquidity < 30_000:
                             continue
 
-                        if volume_24h < 100_000:
+                        if volume_24h < 15_000:
                             continue
 
-                        #if volume_24h > (2 * market_cap):
-                        #    continue
+                        if volume_24h > (2 * market_cap)
+                            continue
 
-                        if price_change > 60:
+                        if price_change > 80:
                             continue
 
                         filtered[symbol] = address
