@@ -52,6 +52,18 @@ TRADE_AMOUNT_SOL = 0.05
 MIN_PROFIT_USD = 0.10
 SLIPPAGE_BPS = 100
 
+
+# =============================
+# EXCLUDED TOKENS
+# =============================
+
+EXCLUDED_SYMBOLS = {
+    "USDC", "USDT", "USX", "USD1",
+    "USDS", "PYUSD", "USDG",
+    "SYRUPUSD", "SYRUPUSDC"
+}
+
+
 # =============================
 # LOGGING
 # =============================
@@ -154,6 +166,16 @@ async def fetch_tokens():
                 address = token.get("address")
 
                 if not symbol or not address:
+                    continue
+
+                symbol_clean = symbol.upper()
+
+                # Exclude SOL
+                if address == SOL_MINT:
+                    continue
+
+                # Exclude stablecoins
+                if symbol_clean in EXCLUDED_SYMBOLS:
                     continue
 
                 try:
@@ -325,14 +347,6 @@ async def scan():
         for symbol, address in tokens.items():
 
             try:
-
-                # Skip SOL itself
-                if address == SOL_MINT:
-                    continue
-
-                # Skip stablecoins
-                if symbol in ["USDC", "USDT", "USX", "USD1", "USDS", "PYUSD", "USDG"]:
-                    continue
 
                 input_mint = SOL_MINT
                 output_mint = address
