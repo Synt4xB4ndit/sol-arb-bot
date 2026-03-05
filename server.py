@@ -302,13 +302,13 @@ async def execute_swap(route):
 async def scan():
 
     if not tokens:
-
         return
 
     amount = int(TRADE_AMOUNT_SOL * 1e9)
 
     async with aiohttp.ClientSession() as session:
 
+        # Get SOL price in USDC for USD profit calculation
         sol_price_route = await get_quote(
             session,
             SOL_MINT,
@@ -317,7 +317,6 @@ async def scan():
         )
 
         if not sol_price_route:
-
             return
 
         sol_price = float(sol_price_route["outAmount"]) / 1e6
@@ -328,10 +327,18 @@ async def scan():
 
             try:
 
+                # Defensive: prevent circular swap
+                input_mint = SOL_MINT
+                output_mint = address
+
+                if input_mint == output_mint:
+                    continue
+
+                # BUY: SOL → TOKEN
                 buy_route = await get_quote(
                     session,
-                    SOL_MINT,
-                    address,
+                    input_mint,
+                    output_mint,
                     amount
                 )
 
@@ -341,9 +348,14 @@ async def scan():
 
                 token_amount = int(buy_route["outAmount"])
 
+                # Defensive: prevent circular on sell
+                if output_mint == SOL_MINT:
+                    continue
+
+                # SELL: TOKEN → SOL
                 sell_route = await get_quote(
                     session,
-                    address,
+                    output_mint,
                     SOL_MINT,
                     token_amount
                 )
@@ -362,7 +374,6 @@ async def scan():
                 )
 
                 if profit_usd > MIN_PROFIT_USD:
-
                     logging.info(
                         f"🚀 ARBITRAGE FOUND {symbol} ${profit_usd:.6f}"
                     )
