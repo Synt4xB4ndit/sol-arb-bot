@@ -209,7 +209,7 @@ async def fetch_tokens():
                         if volume_24h < 15_000:
                             continue
 
-                        if volume_24h > (2 * market_cap)
+                        if volume_24h > (2 * market_cap):
                             continue
 
                         if price_change > 80:
