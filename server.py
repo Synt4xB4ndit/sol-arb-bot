@@ -308,7 +308,6 @@ async def scan():
 
     async with aiohttp.ClientSession() as session:
 
-        # Get SOL price in USDC for USD profit calculation
         sol_price_route = await get_quote(
             session,
             SOL_MINT,
@@ -327,10 +326,18 @@ async def scan():
 
             try:
 
-                # Defensive: prevent circular swap
+                # Skip SOL itself
+                if address == SOL_MINT:
+                    continue
+
+                # Skip stablecoins
+                if symbol in ["USDC", "USDT", "USX", "USD1", "USDS", "PYUSD", "USDG"]:
+                    continue
+
                 input_mint = SOL_MINT
                 output_mint = address
 
+                # Extra defensive circular protection
                 if input_mint == output_mint:
                     continue
 
@@ -347,10 +354,6 @@ async def scan():
                     continue
 
                 token_amount = int(buy_route["outAmount"])
-
-                # Defensive: prevent circular on sell
-                if output_mint == SOL_MINT:
-                    continue
 
                 # SELL: TOKEN → SOL
                 sell_route = await get_quote(
