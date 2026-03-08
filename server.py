@@ -363,6 +363,11 @@ async def scan():
                     amount
                 )
 
+                route = buy_route.get("routePlan", [])
+                dexes = [step["swapInfo"]["label"] for step in route]
+
+                logging.info(f"{symbol} route: {dexes}")
+
                 if not buy_route:
                     logging.info(f"{symbol}: No buy route")
                     continue
