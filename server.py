@@ -60,7 +60,7 @@ SLIPPAGE_BPS = 100
 EXCLUDED_SYMBOLS = {
     "USDC", "USDT", "USX", "USD1",
     "USDS", "PYUSD", "USDG",
-    "SYRUPUSD", "SYRUPUSDC"
+    "SYRUPUSD", "SYRUPUSDC",
 }
 
 # =============================
@@ -75,6 +75,18 @@ ALLOWED_DEXES = {
     "Phoenix",
     "Lifinity"
 }
+
+# =============================
+# EXCLUDED KEYWORDS
+# =============================
+
+EXCLUDED_KEYWORDS = [
+    "JITOSOL",
+    "MSOL",
+    "STSOL",
+    "BNSOL",
+    "SCNSOL"
+]
 
 
 # =============================
@@ -189,6 +201,10 @@ async def fetch_tokens():
 
                 # Exclude stablecoins
                 if symbol_clean in EXCLUDED_SYMBOLS:
+                    continue
+
+                # Exclude SOL derivative tokens
+                if any(keyword in symbol_clean for keyword in EXCLUDED_KEYWORDS):
                     continue
 
                 try:
