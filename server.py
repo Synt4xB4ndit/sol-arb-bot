@@ -277,7 +277,7 @@ async def get_quote(session, input_mint, output_mint, amount):
         "amount": str(amount),
         "slippageBps": str(SLIPPAGE_BPS),
         "swapMode": "ExactIn",
-        "restrictIntermediateTokens": "true"
+        "restrictIntermediateTokens": "false"
     }
 
     headers = {
@@ -372,6 +372,7 @@ async def scan():
         sol_price = float(sol_price_route["outAmount"]) / 1e6
 
         logging.info(f"Scanning {len(tokens)} tokens...")
+        skipped_count = 0
 
         for symbol, address in tokens.items():
 
@@ -382,6 +383,7 @@ async def scan():
 
                 # Extra defensive circular protection
                 if input_mint == output_mint:
+                    skipped_count += 1
                     continue
 
                 # BUY: SOL → TOKEN
@@ -392,18 +394,16 @@ async def scan():
                     amount
                 )
 
+                if not buy_route:
+                    skipped_count += 1
+                    continue
+
                 route = buy_route.get("routePlan", [])
                 dexes = [step["swapInfo"]["label"] for step in route]
 
                 # Only allow trusted DEXs
                 if not all(dex in ALLOWED_DEXES for dex in dexes):
-                    logging.info(f"{symbol} skipped route: {dexes}")
-                    continue
-
-                logging.info(f"{symbol} route: {dexes}")
-
-                if not buy_route:
-                    logging.info(f"{symbol}: No buy route")
+                    skipped_count += 1
                     continue
 
                 token_amount = int(buy_route["outAmount"])
@@ -417,7 +417,7 @@ async def scan():
                 )
 
                 if not sell_route:
-                    logging.info(f"{symbol}: No sell route")
+                    skipped_count += 1
                     continue
 
                 sol_received = int(sell_route["outAmount"]) / 1e9
@@ -430,6 +430,7 @@ async def scan():
                 )
 
                 if profit_usd > MIN_PROFIT_USD:
+
                     logging.info(
                         f"🚀 ARBITRAGE FOUND {symbol} ${profit_usd:.6f}"
                     )
@@ -437,7 +438,12 @@ async def scan():
                     await execute_swap(buy_route)
 
             except Exception as e:
+
                 logging.error(f"{symbol} error: {e}")
+                skipped_count += 1
+
+        logging.info(f"Skipped tokens: {skipped_count}")
+
 
 # =============================
 # BOT LOOP
