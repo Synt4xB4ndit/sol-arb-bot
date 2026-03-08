@@ -63,6 +63,19 @@ EXCLUDED_SYMBOLS = {
     "SYRUPUSD", "SYRUPUSDC"
 }
 
+# =============================
+# ALLOWED DEX ROUTES
+# =============================
+
+ALLOWED_DEXES = {
+    "Raydium",
+    "Orca",
+    "Meteora",
+    "Meteora DLMM",
+    "Phoenix",
+    "Lifinity"
+}
+
 
 # =============================
 # LOGGING
@@ -365,6 +378,11 @@ async def scan():
 
                 route = buy_route.get("routePlan", [])
                 dexes = [step["swapInfo"]["label"] for step in route]
+
+                # Only allow trusted DEXs
+                if not all(dex in ALLOWED_DEXES for dex in dexes):
+                    logging.info(f"{symbol} skipped route: {dexes}")
+                    continue
 
                 logging.info(f"{symbol} route: {dexes}")
 
